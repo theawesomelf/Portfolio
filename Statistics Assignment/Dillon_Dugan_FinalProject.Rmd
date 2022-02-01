@@ -1,0 +1,144 @@
+---
+title: "Final Project, Winter 2021"
+author: "Dillon Dugan"
+date: "03/14/2021"
+output: pdf_document
+---
+
+ABSTRACT
+This project explores the use of Random Tree Methods to estimate the user score (0.0-10.0) rating of major PC video games from the online distributor, Steam. The Steam database as many observations of all games on its platform, including the names, price, number of owners, average play time, etc. These variables are going to be the main driving force for the regression models created by the Random Tree Methods. This project also explores the importance of each variable for the decision trees that make the final model, most importantly might be the actual reviews on Steam, which are encoded as number of positive/negative rather than the 0-10 scale that user score has. Running the randomForest and ranger function from the randomForest package, with user score as the outcome variable and all other variables as explanatory variables, both models seem to accurately guess the user score within the mean squared error of 0.89. The most important variables were the Price, number of owners, and the average playtime of the game. Overall, the random forest methods seem appropriate to predicting user score through regression decision trees, however, with more accurate predictive variables, the estimate could yield better results.
+
+DATA SOURCES
+The data for this project was sourced from public records of Steam data uploaded to Kaggle and Github, however it may be traced directly back to Steam databases available publicly through website API. The first dataset downloaded directly from the Github link provided much of the details of every game on Steam while a second database was used to obtain the percentage of positive/negative reviews for each game on Steam. The final dataset is a Metacritic dataset, also publicly available through website API, that gives the user score and meta score of a large sum of the games featured on Steam. 
+
+Ultimately, all three data sources were inner joined on each other by the name of the game. This final dataset was clean-up for duplicate variables and missing content as the randomForest package works best with complete data, resulting in 1150 rows with 12 variables: game, release_date, price, owners, developer and publisher, average_playtime, metascore, genre, percentage of positive and negative reviews, and the actual user score of each game. The price, owners, average_playtime, metascore, and percentage of positive/negative users were continuous explanatory variables and the rest were categorical, however, random forest methods can't handle more than 56 factors so there was not a conversion of character to factor. There were multiple instances of Warner Brothers published games being listed as WB or Warner Bros., so the data needed to combine the both. 
+
+EXPLORATORY DATA ANALYSIS
+There wasn't much exploratory data analysis performed other than getting the dataset in a usable form for the randomForest methods. There was a creation of a split 70%/30% training and testing dataset to test the randomForest methods with. However, a validation set, while optional for randomForest methods, was not created as the Out-of-Bag sets would give the cross-validation necessary to test the models predictive accuracy.
+
+RANDOM FOREST METHODS
+The Random Forest methods used for this project were randomForest and ranger. Even though both can output the same predictive power, ranger tends to perform much quicker on the dataset because it takes random selections from the given training set directly rather than taking from a set created by the weights of the original training set. Both functions still create the model by testing the training dataset against a selective number of given variables to create a certain number of decision trees to average into a final model. By default, both functions will use 500 decision trees and will use the number of given variables divided by 3 as the "mtry" parameter. The mtry parameter is how many variables will be tested at each split of the tree. However, using the plot of a basic randomForest model and the TuneRF function from the randomForest package, this dataset seemed to perform best at 97 decision trees and as mtry increased, the error rate continued to decrease. So, for the ranger and randomForest function, the number of trees was changed to 100, as anything above it wouldn't increase the predictive power of the model, and mtry was set to the number of variables in the dataset. These models were then tested with the testing dataset in the predict function. Comparing the actual user scores to the predicted user scores, both models were fairly accurate at predicting the user score based of the given variables. Both models demonstrated that the price, the number of owners, and the average play time of the game was most important for determining a regression model to predict user score.
+
+
+
+
+Load any libraries used
+
+```{r setup, include=TRUE}
+library(tidyverse) #Used for Data clean-up and visualization
+library(dplyr) #Used for data clean-up
+library(stringr) #Used for data clean-up
+library(taRifx) #Used for data clean-up
+library(rlang) #Used for rsample
+library(rsample) #Used for data splitting
+library(randomForest) #Basic implementation of Random Forests
+library(ranger) #Faster implementation of Random Forests
+library(caret) #Used for calculating model accuracy
+
+```
+
+Load and clean data
+
+```{r}
+steam_games <- read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2019/2019-07-30/video_games.csv") %>%
+  mutate(release_date = as.Date(release_date, "%b %d, %Y")) 
+
+steam_reviews <- read_csv("steam_games.csv") %>%
+   select(c(game=name, genre, all_reviews))
+steam_reviews$all_reviews[steam_reviews$all_reviews=="NaN"] <- NA
+steam_reviews <- steam_reviews %>%
+   drop_na() 
+steam_reviews$all_reviews <- sub("%.*", "", steam_reviews$all_reviews)
+steam_reviews$positive_percentage_users <- as.numeric(substr(steam_reviews$all_reviews, nchar(steam_reviews$all_reviews)-1, nchar(steam_reviews$all_reviews)))/100
+steam_reviews$negative_percentage_users <- 1 - steam_reviews$positive_percentage_users
+
+
+metacritic <- read_csv("metacritic_games.csv")
+metacritic$game <- metacritic$name 
+metacritic <- metacritic %>%
+   filter(console=="PC") %>%
+   select(c(game,userscore))
+
+steam_ratings <- steam_reviews %>%
+   group_by(game) %>%
+   inner_join(metacritic,by="game")
+
+games <- steam_games %>%
+   inner_join(steam_ratings,by="game") %>%
+   mutate(owners=parse_number(owners)) %>%
+   mutate(publisher = case_when(str_detect(publisher,pattern = "Warner Bros|WB")~"Warner Brothers",TRUE~publisher)) %>%
+   select(-c(number,all_reviews,median_playtime)) %>%
+   drop_na()
+
+```
+Splitting the data into train and test sets. Demonstrating a basic implementation of randomForest
+
+```{r}
+set.seed(123456)
+
+games_split <- initial_split(games, prop=0.7)
+games_train <- training(games_split)
+games_test <- testing(games_split)
+
+games.rf1 <- randomForest(userscore~., data=games_train)
+plot(games.rf1)
+which.min(games.rf1$mse)
+sqrt(games.rf1$mse[which.min(games.rf1$mse)])
+
+```
+
+Demonstrating tuning on randomForests
+
+```{r}
+set.seed(123456)
+
+features <- setdiff(names(games_train), "userscore")
+floor(length(features)/3)
+
+games.rfTUNE <- tuneRF(x=games_train, y=games_train$userscore, ntreeTry=100, improve=0.01)
+
+```
+
+Demonstrating the efficiency difference between randomForest and ranger
+
+```{r}
+set.seed(123456)
+
+# randomForest speed
+system.time(
+  games_randomForest <- randomForest(formula=userscore~., 
+                                     data=games_train, nTrees=100, 
+                                     mtry=11)
+)
+# ranger speed
+system.time(
+  games_ranger <- ranger(formula=userscore~., 
+                         data=games_train, importance="impurity", 
+                         num.trees=100, mtry=11)
+)
+
+```
+Making predictions based on randomForests and ranger
+
+```{r}
+pred_randomForest <- predict(games_randomForest, games_test)
+
+pred_ranger <- predict(games_ranger, games_test)
+
+Userscores = data.frame(actual_score=games_test$userscore,pred_randomForest=round(pred_randomForest,1),pred_ranger=round(pred_ranger$predictions,1))
+
+```
+
+Looking at model prediction error and plotting predictive values against actual values
+
+```{r}
+games_randomForest
+games_ranger
+games_randomForest$importance
+games_ranger$variable.importance
+
+ggplot(Userscores, aes(x=actual_score, y=pred_randomForest)) + geom_point() + geom_smooth(color='red', method="lm") + ggtitle("Actual Userscore vs randomForest Predicted Userscores")
+
+ggplot(Userscores, aes(x=actual_score, y=pred_ranger)) + geom_point() + geom_smooth(color='red', method="lm") + ggtitle("Actual Userscore vs ranger Predicted Userscores")
+
+```
